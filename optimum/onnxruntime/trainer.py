@@ -58,7 +58,7 @@ from transformers.debug_utils import DebugOption, DebugUnderflowOverflow
 from transformers.modeling_utils import PreTrainedModel, unwrap_model
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 from transformers.trainer import Trainer
-from transformers.trainer_callback import TrainerCallback, TrainerState
+from transformers.trainer_callback import TrainerCallback, TrainerState, ExportableState
 from transformers.trainer_pt_utils import (
     get_model_param_count,
     get_module_class_from_name,
@@ -256,7 +256,7 @@ class ORTTrainer(Trainer):
 
         # We leverage both training_model and inference_model in conjunction with model.
         # _training_model will be wrapped so it will use ORT and will use the overriden functions in ModuleWithLoss.
-        # _training_model will be storing the default version of the model and will unwrap it in case of eval/test.
+        # _inference_model will be storing the default version of the model and will unwrap it in case of eval/test.
 
         # Only Wrap the model if we pass --use_module_with_loss flag.
         if args.use_module_with_loss:
@@ -419,6 +419,21 @@ class ORTTrainer(Trainer):
 
         self.accelerator.free_memory()
         self._train_batch_size = batch_size
+        if self.args.auto_find_batch_size:
+            if self.state.train_batch_size != self._train_batch_size:
+                from accelerate.utils import release_memory
+
+                (self.model_wrapped,) = release_memory(self.model_wrapped)
+                self.model_wrapped = self.model
+
+                # Check for DeepSpeed *after* the intial pass and modify the config
+                if self.is_deepspeed_enabled:
+                    # Temporarily unset `self.args.train_batch_size`
+                    original_bs = self.args.per_device_train_batch_size
+                    self.args.per_device_train_batch_size = self._train_batch_size // max(1, self.args.n_gpu)
+                    self.propagate_args_to_deepspeed(True)
+                    self.args.per_device_train_batch_size = original_bs
+            self.state.train_batch_size = self._train_batch_size
         logger.debug(f"Currently training with a batch size of: {self._train_batch_size}")
         # Data loader and number of training steps
         train_dataloader = self.get_train_dataloader()
@@ -430,6 +445,7 @@ class ORTTrainer(Trainer):
         total_train_batch_size = self._train_batch_size * args.gradient_accumulation_steps * args.world_size
 
         len_dataloader = None
+        num_train_tokens = None
         if has_length(train_dataloader):
             len_dataloader = len(train_dataloader)
             num_update_steps_per_epoch = len_dataloader // args.gradient_accumulation_steps
@@ -443,10 +459,16 @@ class ORTTrainer(Trainer):
                 # May be slightly incorrect if the last batch in the training dataloader has a smaller size but it's
                 # the best we can do.
                 num_train_samples = args.max_steps * total_train_batch_size
+                if args.include_tokens_per_second:
+                    num_train_tokens = (
+                        self.num_tokens(train_dataloader, args.max_steps) * args.gradient_accumulation_steps
+                    )
             else:
                 max_steps = math.ceil(args.num_train_epochs * num_update_steps_per_epoch)
                 num_train_epochs = math.ceil(args.num_train_epochs)
                 num_train_samples = self.num_examples(train_dataloader) * args.num_train_epochs
+                if args.include_tokens_per_second:
+                    num_train_tokens = self.num_tokens(train_dataloader) * args.num_train_epochs
         elif args.max_steps > 0:  # Rely on max_steps when dataloader does not have a working size
             max_steps = args.max_steps
             # Setting a very large number of epochs so we go as many times as necessary over the iterator.
@@ -454,6 +476,8 @@ class ORTTrainer(Trainer):
             num_update_steps_per_epoch = max_steps
             num_examples = total_train_batch_size * args.max_steps
             num_train_samples = args.max_steps * total_train_batch_size
+            if args.include_tokens_per_second:
+                num_train_tokens = self.num_tokens(train_dataloader, args.max_steps) * args.gradient_accumulation_steps
         else:
             raise ValueError(
                 "args.max_steps must be set to a positive value if dataloader does not have a length, was"
@@ -466,7 +490,7 @@ class ORTTrainer(Trainer):
                 # references registered here no longer work on other gpus, breaking the module
                 raise ValueError(
                     "Currently --debug underflow_overflow is not supported under DP. Please use DDP"
-                    " (torch.distributed.launch)."
+                    " (torchrun or torch.distributed.launch (deprecated))."
                 )
             else:
                 debug_overflow = DebugUnderflowOverflow(self.model)  # noqa
@@ -508,8 +532,13 @@ class ORTTrainer(Trainer):
         if not delay_optimizer_creation:
             self.create_optimizer_and_scheduler(num_training_steps=max_steps)
 
-        self.state = TrainerState()
+        self.state = TrainerState(
+            stateful_callbacks=[
+                cb for cb in self.callback_handler.callbacks + [self.control] if isinstance(cb, ExportableState)
+            ]
+        )
         self.state.is_hyper_param_search = trial is not None
+        self.state.train_batch_size = self._train_batch_size
 
         # Compute absolute values for logging, eval, and save if given as ratio
         if args.logging_steps is not None:
@@ -550,7 +579,6 @@ class ORTTrainer(Trainer):
         # prepare using `accelerator` prepare
         if use_accelerator_prepare:
             self.model.train()
-            self.accelerator.distributed_type == DistributedType.DEEPSPEED
             if hasattr(self.lr_scheduler, "step"):
                 if self.use_apex:
                     model = self.accelerator.prepare(self.model)
@@ -571,6 +599,10 @@ class ORTTrainer(Trainer):
 
         if self.is_fsdp_enabled:
             self.model = model
+
+        # Unwrap ORTModule(Transformers Model) to get underlying Transformers Model
+        if isinstance(self.model, ORTModule):
+            self.model = self.model.module
 
         # for the rest of this function `model` is the outside model, whether it was wrapped or not
         if model is not self.model:
@@ -631,7 +663,7 @@ class ORTTrainer(Trainer):
                 )
 
         # Update the references
-        self.callback_handler.model = self.model
+        self.callback_handler.model = model
         self.callback_handler.optimizer = self.optimizer
         self.callback_handler.lr_scheduler = self.lr_scheduler
         self.callback_handler.train_dataloader = train_dataloader
