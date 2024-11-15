@@ -882,6 +882,8 @@ class ORTTrainer(Trainer):
         train_loss = self._total_loss_scalar / self.state.global_step
 
         metrics = speed_metrics("train", start_time, num_samples=num_train_samples, num_steps=self.state.max_steps,num_tokens=num_train_tokens,)
+
+        total_samples = self.state.global_step*total_train_batch_size if args.max_steps > 0 else num_examples*num_train_epochs
         perf_samples = total_samples - self.args.warmup_steps*total_train_batch_size
         stable_train_metrics = speed_metrics("stable_train", start_train_stable_time, perf_samples)
         self.store_flos()
