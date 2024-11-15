@@ -58,7 +58,7 @@ from transformers.debug_utils import DebugOption, DebugUnderflowOverflow
 from transformers.modeling_utils import PreTrainedModel, unwrap_model
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 from transformers.trainer import Trainer
-from transformers.trainer_callback import TrainerCallback, TrainerState, ExportableState
+from transformers.trainer_callback import ExportableState, TrainerCallback, TrainerState
 from transformers.trainer_pt_utils import (
     get_model_param_count,
     get_module_class_from_name,
@@ -714,6 +714,7 @@ class ORTTrainer(Trainer):
                     sampler = sampler if sampler is not None else []
                     _ = list(sampler)
 
+        start_train_stable_time = 0
         total_batched_samples = 0
         for epoch in range(epochs_trained, num_train_epochs):
             epoch_iterator = train_dataloader
@@ -733,6 +734,10 @@ class ORTTrainer(Trainer):
                 self._load_rng_state(resume_from_checkpoint)
 
             rng_to_sync = False
+
+            if (self.state.global_step == 10):
+                start_train_stable_time = time.time()
+
             steps_skipped = 0
             if steps_trained_in_current_epoch > 0:
                 epoch_iterator = skip_first_batches(epoch_iterator, steps_trained_in_current_epoch)
@@ -876,7 +881,8 @@ class ORTTrainer(Trainer):
         self._total_loss_scalar += tr_loss.item()
         train_loss = self._total_loss_scalar / self.state.global_step
 
-        metrics = speed_metrics("train", start_time, num_samples=num_train_samples, num_steps=self.state.max_steps)
+        metrics = speed_metrics("train", start_time, num_samples=num_train_samples, num_steps=self.state.max_steps,num_tokens=num_train_tokens,)
+        stable_train_metrics = speed_metrics("stable_train", start_train_stable_time, num_train_samples)
         self.store_flos()
         metrics["total_flos"] = self.state.total_flos
         metrics["train_loss"] = train_loss
@@ -886,6 +892,8 @@ class ORTTrainer(Trainer):
         self._memory_tracker.stop_and_update_metrics(metrics)
 
         self.log(metrics)
+
+        self.log(stable_train_metrics)
 
         run_dir = self._get_output_dir(trial)
         checkpoints_sorted = self._sorted_checkpoints(use_mtime=False, output_dir=run_dir)
