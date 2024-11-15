@@ -735,9 +735,6 @@ class ORTTrainer(Trainer):
 
             rng_to_sync = False
 
-            if (self.state.global_step == args.stable_train_warmup_steps):
-                start_train_stable_time = time.time()
-
             steps_skipped = 0
             if steps_trained_in_current_epoch > 0:
                 epoch_iterator = skip_first_batches(epoch_iterator, steps_trained_in_current_epoch)
@@ -751,6 +748,9 @@ class ORTTrainer(Trainer):
                 if rng_to_sync:
                     self._load_rng_state(resume_from_checkpoint)
                     rng_to_sync = False
+
+                if (self.state.global_step == args.stable_train_warmup_steps):
+                    start_train_stable_time = time.time()
 
                 # Skip past any already trained steps if resuming training
                 if steps_trained_in_current_epoch > 0:
