@@ -217,6 +217,7 @@ class TasksManager:
             "multiple-choice": "AutoModelForMultipleChoice",
             "object-detection": "AutoModelForObjectDetection",
             "question-answering": "AutoModelForQuestionAnswering",
+            "reinforcement-learning": "AutoModel",
             "semantic-segmentation": "AutoModelForSemanticSegmentation",
             "text-to-audio": ("AutoModelForTextToSpectrogram", "AutoModelForTextToWaveform"),
             "text-generation": "AutoModelForCausalLM",
@@ -430,6 +431,15 @@ class TasksManager:
             onnx="BertOnnxConfig",
             tflite="BertTFLiteConfig",
         ),
+        "rembert": supported_tasks_mapping(
+            "fill-mask",
+            "feature-extraction",
+            "text-classification",
+            "multiple-choice",
+            "token-classification",
+            "question-answering",
+            onnx="RemBertOnnxConfig",
+        ),
         # For big-bird and bigbird-pegasus being unsupported, refer to model_configs.py
         # "big-bird": supported_tasks_mapping(
         #     "feature-extraction",
@@ -573,6 +583,11 @@ class TasksManager:
             "question-answering",
             onnx="DebertaV2OnnxConfig",
             tflite="DebertaV2TFLiteConfig",
+        ),
+        "decision-transformer": supported_tasks_mapping(
+            "feature-extraction",
+            "reinforcement-learning",
+            onnx="DecisionTransformerOnnxConfig",
         ),
         "deit": supported_tasks_mapping(
             "feature-extraction",
@@ -2085,6 +2100,9 @@ class TasksManager:
             if original_task == "automatic-speech-recognition" or task == "automatic-speech-recognition":
                 if original_task == "auto" and config.architectures is not None:
                     model_class_name = config.architectures[0]
+            elif original_task == "reinforcement-learning" or task == "reinforcement-learning":
+                if config.architectures is not None:
+                    model_class_name = config.architectures[0]
 
         if library_name == "diffusers":
             config = DiffusionPipeline.load_config(model_name_or_path, **kwargs)
@@ -2119,6 +2137,7 @@ class TasksManager:
                 device=device,
                 cache_folder=cache_folder,
                 token=token,
+                revision=revision,
                 trust_remote_code=trust_remote_code,
             )
         else:
