@@ -81,6 +81,7 @@ from transformers.utils import (
     is_apex_available,
     is_sagemaker_dp_enabled,
     is_sagemaker_mp_enabled,
+    is_torch_xla_available,
 )
 
 from ..utils import logging
@@ -103,16 +104,8 @@ if check_if_transformers_greater("4.33"):
 else:
     from transformers.deepspeed import deepspeed_init, deepspeed_load_checkpoint, is_deepspeed_zero3_enabled
 
-if check_if_transformers_greater("4.39"):
-    from transformers.utils import is_torch_xla_available as is_torch_tpu_xla_available
-
-    if is_torch_tpu_xla_available():
-        import torch_xla.core.xla_model as xm
-else:
-    from transformers.utils import is_torch_tpu_available as is_torch_tpu_xla_available
-
-    if is_torch_tpu_xla_available(check_device=False):
-        import torch_xla.core.xla_model as xm
+if is_torch_xla_available():
+    import torch_xla.core.xla_model as xm
 
 if TYPE_CHECKING:
     import optuna
@@ -792,7 +785,7 @@ class ORTTrainer(Trainer):
 
                     if (
                         args.logging_nan_inf_filter
-                        and not is_torch_tpu_xla_available()
+                        and not is_torch_xla_available()
                         and (torch.isnan(tr_loss_step) or torch.isinf(tr_loss_step))
                     ):
                         # if loss is nan or inf simply add the average of previous logged losses
@@ -865,12 +858,12 @@ class ORTTrainer(Trainer):
                     # each step. Since we are breaking the loop early, we need to manually
                     # insert the mark_step here.
                     if self.control.should_epoch_stop or self.control.should_training_stop:
-                        if is_torch_tpu_xla_available():
+                        if is_torch_xla_available():
                             xm.mark_step()
                         break
                 # We also need to break out of the nested loop
                 if self.control.should_epoch_stop or self.control.should_training_stop:
-                    if is_torch_tpu_xla_available():
+                    if is_torch_xla_available():
                         xm.mark_step()
                     break
             if step < 0:
