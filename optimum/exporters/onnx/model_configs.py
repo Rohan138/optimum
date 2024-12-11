@@ -27,6 +27,7 @@ from ...utils import (
     BloomDummyPastKeyValuesGenerator,
     DummyAudioInputGenerator,
     DummyCodegenDecoderTextInputGenerator,
+    DummyDecisionTransformerInputGenerator,
     DummyDecoderTextInputGenerator,
     DummyEncodecInputGenerator,
     DummyFluxTransformerTextInputGenerator,
@@ -161,6 +162,10 @@ class SplinterOnnxConfig(BertOnnxConfig):
     DEFAULT_ONNX_OPSET = 11
 
 
+class RemBertOnnxConfig(BertOnnxConfig):
+    DEFAULT_ONNX_OPSET = 11
+
+
 class DistilBertOnnxConfig(BertOnnxConfig):
     DEFAULT_ONNX_OPSET = 14  # now uses F.scaled_dot_product_attention by default for transformers>=4.46.0
 
@@ -261,6 +266,30 @@ class CodeGenOnnxConfig(GPT2OnnxConfig):
 
 class ImageGPTOnnxConfig(GPT2OnnxConfig):
     pass
+
+
+class DecisionTransformerOnnxConfig(OnnxConfig):
+    DUMMY_INPUT_GENERATOR_CLASSES = (DummyDecisionTransformerInputGenerator,)
+    NORMALIZED_CONFIG_CLASS = NormalizedConfig
+
+    @property
+    def inputs(self) -> Dict[str, Dict[int, str]]:
+        return {
+            "states": {0: "batch_size", 1: "sequence_length"},
+            "actions": {0: "batch_size", 1: "sequence_length"},
+            "timesteps": {0: "batch_size", 1: "sequence_length"},
+            "returns_to_go": {0: "batch_size", 1: "sequence_length"},
+            "attention_mask": {0: "batch_size", 1: "sequence_length"},
+        }
+
+    @property
+    def outputs(self) -> Dict[str, Dict[int, str]]:
+        return {
+            "state_preds": {0: "batch_size", 1: "sequence_length"},
+            "action_preds": {0: "batch_size", 1: "sequence_length"},
+            "return_preds": {0: "batch_size", 1: "sequence_length"},
+            "last_hidden_state": {0: "batch_size", 1: "sequence_length"},
+        }
 
 
 class GPTNeoOnnxConfig(TextDecoderWithPositionIdsOnnxConfig):
