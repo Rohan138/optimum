@@ -657,7 +657,7 @@ class ORTTrainer(Trainer):
                 )
 
         # Update the references
-        self.callback_handler.model = model
+        self.callback_handler.model = self.model
         self.callback_handler.optimizer = self.optimizer
         self.callback_handler.lr_scheduler = self.lr_scheduler
         self.callback_handler.train_dataloader = train_dataloader
