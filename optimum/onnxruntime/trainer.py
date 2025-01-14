@@ -791,7 +791,7 @@ class ORTTrainer(Trainer):
 
                     if (
                         args.logging_nan_inf_filter
-                        and not is_torch_xla_available()
+                        and not is_torch_tpu_xla_available()
                         and (torch.isnan(tr_loss_step) or torch.isinf(tr_loss_step))
                     ):
                         # if loss is nan or inf simply add the average of previous logged losses
@@ -864,12 +864,12 @@ class ORTTrainer(Trainer):
                     # each step. Since we are breaking the loop early, we need to manually
                     # insert the mark_step here.
                     if self.control.should_epoch_stop or self.control.should_training_stop:
-                        if is_torch_xla_available():
+                        if is_torch_tpu_xla_available():
                             xm.mark_step()
                         break
                 # We also need to break out of the nested loop
                 if self.control.should_epoch_stop or self.control.should_training_stop:
-                    if is_torch_xla_available():
+                    if is_torch_tpu_xla_available():
                         xm.mark_step()
                     break
             if step < 0:
