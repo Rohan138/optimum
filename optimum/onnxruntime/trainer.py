@@ -14,7 +14,6 @@
 """
 The ORTTrainer class, to easily train a 🤗 Transformers from scratch or finetune it on a new task with ONNX Runtime.
 """
-import contextlib
 import functools
 import math
 import os
@@ -28,8 +27,8 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Un
 
 # Integrations must be imported before ML frameworks:
 # isort: off
+import safetensors
 from transformers.integrations import hp_params
-
 from transformers.utils import is_accelerate_available
 from packaging import version
 
@@ -78,6 +77,8 @@ from transformers.trainer_utils import (
 )
 from transformers.training_args import ParallelMode
 from transformers.utils import (
+    SAFE_WEIGHTS_NAME,
+    WEIGHTS_NAME,
     is_apex_available,
     is_sagemaker_dp_enabled,
     is_sagemaker_mp_enabled,
@@ -120,11 +121,12 @@ if TYPE_CHECKING:
 
 # Name of the files used for checkpointing
 TRAINER_STATE_NAME = "trainer_state.json"
+TRAINING_ARGS_NAME = "training_args.bin"
 
 logger = logging.get_logger(__name__)
 
 
-class ModuleWithLoss(nn.Module):
+class ModuleWithLoss(PreTrainedModel):
     def __init__(self, model, args, label_smoother):
         super().__init__()
         self._original_model = model
@@ -781,28 +783,19 @@ class ORTTrainer(Trainer):
                     if step % args.gradient_accumulation_steps == 0:
                         self.control = self.callback_handler.on_step_begin(args, self.state, self.control)
 
-                    # We explicitly want to avoid relying on `accelerator.accumulate` for generation training
-                    context = (
-                        functools.partial(self.accelerator.no_sync, model=model)
-                        if i != len(batch_samples) - 1
-                        else contextlib.nullcontext
-                    )
-                    with context():
-                        tr_loss_step = self.training_step(model, inputs, num_items_in_batch)
+                    model.zero_grad()
+                    self.state.global_step += 1
+                    self.state.epoch = epoch + (step + 1 + steps_skipped) / steps_in_epoch
+                    self.control = self.callback_handler.on_step_end(args, self.state, self.control)
 
-                    if (
-                        args.logging_nan_inf_filter
-                        and not is_torch_tpu_xla_available()
-                        and (torch.isnan(tr_loss_step) or torch.isinf(tr_loss_step))
-                    ):
-                        # if loss is nan or inf simply add the average of previous logged losses
-                        tr_loss = tr_loss + tr_loss / (1 + self.state.global_step - self._globalstep_last_logged)
+                    if is_transformers_version(">=", "4.47.0"):
+                        self._maybe_log_save_evaluate(
+                            tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time
+                        )
                     else:
-                        if tr_loss.device != tr_loss_step.device:
-                            raise ValueError(
-                                f"Calculated loss must be on the original device: {tr_loss.device} but device in use is {tr_loss_step.device}"
-                            )
-                        tr_loss = tr_loss + tr_loss_step
+                        self._maybe_log_save_evaluate(tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval)
+                else:
+                    self.control = self.callback_handler.on_substep_end(args, self.state, self.control)
 
                     self.current_flos += float(self.floating_point_ops(inputs))
 
@@ -882,8 +875,13 @@ class ORTTrainer(Trainer):
                 self.control.should_training_stop = True
 
             self.control = self.callback_handler.on_epoch_end(args, self.state, self.control)
-            self._maybe_log_save_evaluate(tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time)
 
+            if is_transformers_version(">=", "4.47.0"):
+                self._maybe_log_save_evaluate(
+                    tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time
+                )
+            else:
+                self._maybe_log_save_evaluate(tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval)
             if DebugOption.TPU_METRICS_DEBUG in self.args.debug:
                 logger.warning(
                     "You enabled PyTorch/XLA debug metrics which is not supported by ONNX "
@@ -1141,3 +1139,39 @@ class ORTTrainer(Trainer):
         else:
             raise ValueError(f"ORTTrainer cannot instantiate unsupported optimizer: {args.optim}")
         return optimizer_cls, optimizer_kwargs
+
+    def _save(self, output_dir: Optional[str] = None, state_dict=None):
+        # If we are executing this function, we are the process zero, so we don't check for that.
+        output_dir = output_dir if output_dir is not None else self.args.output_dir
+        os.makedirs(output_dir, exist_ok=True)
+        logger.info(f"Saving model checkpoint to {output_dir}")
+
+        supported_classes = (PreTrainedModel,)
+        # Save a trained model and configuration using `save_pretrained()`.
+        # They can then be reloaded using `from_pretrained()`
+        if not isinstance(self.model, supported_classes):
+            if state_dict is None:
+                state_dict = self.model.state_dict()
+
+            if isinstance(self.accelerator.unwrap_model(self.model), supported_classes):
+                self.accelerator.unwrap_model(self.model).save_pretrained(
+                    output_dir, state_dict=state_dict, safe_serialization=self.args.save_safetensors
+                )
+            else:
+                logger.info("Trainer.model is not a `PreTrainedModel`, only saving its state dict.")
+                if self.args.save_safetensors:
+                    safetensors.torch.save_model(
+                        self.model, os.path.join(output_dir, SAFE_WEIGHTS_NAME), metadata={"format": "pt"}
+                    )
+                else:
+                    torch.save(state_dict, os.path.join(output_dir, WEIGHTS_NAME))
+        else:
+            self.model.save_pretrained(
+                output_dir, state_dict=state_dict, safe_serialization=self.args.save_safetensors
+            )
+
+        if self.processing_class is not None:
+            self.processing_class.save_pretrained(output_dir)
+
+        # Good practice: save your training arguments together with the trained model
+        torch.save(self.args, os.path.join(output_dir, TRAINING_ARGS_NAME))
