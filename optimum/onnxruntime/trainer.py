@@ -596,6 +596,10 @@ class ORTTrainer(Trainer):
         # Check if saved optimizer or scheduler states exist
         self._load_optimizer_and_scheduler(resume_from_checkpoint)
 
+        # remove ORTModule wrapper from self.model
+        if isinstance(self.model, ORTModule):
+            self.model = self.model.module
+
         # Important: at this point if enabled distributed training features:
         # self.model         is the Transformers Model
         # self.model_wrapped is DDP(ORTModule(Transformers Model)), Deepspeed(ORTModule(Transformers Model)), etc.
