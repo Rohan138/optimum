@@ -692,6 +692,7 @@ class ORTTrainer(Trainer):
                     _ = list(sampler)
 
         total_batched_samples = 0
+        start_train_stable_time = 0
         for epoch in range(epochs_trained, num_train_epochs):
             epoch_iterator = train_dataloader
 
@@ -720,6 +721,10 @@ class ORTTrainer(Trainer):
             step = -1
             for step, inputs in enumerate(epoch_iterator):
                 total_batched_samples += 1
+
+                if (step == args.stable_train_warmup_steps):
+                    start_train_stable_time = time.time()
+
                 if rng_to_sync:
                     self._load_rng_state(resume_from_checkpoint)
                     rng_to_sync = False
@@ -863,6 +868,8 @@ class ORTTrainer(Trainer):
         train_loss = self._total_loss_scalar / self.state.global_step
 
         metrics = speed_metrics("train", start_time, num_samples=num_train_samples, num_steps=self.state.max_steps)
+        stable_train_samples = num_train_samples - args.stable_train_warmup_steps*total_train_batch_size
+        stable_train_metrics = speed_metrics("stable_train", start_train_stable_time, stable_train_samples)
         self.store_flos()
         metrics["total_flos"] = self.state.total_flos
         metrics["train_loss"] = train_loss
@@ -872,6 +879,7 @@ class ORTTrainer(Trainer):
         self._memory_tracker.stop_and_update_metrics(metrics)
 
         self.log(metrics)
+        self.log(stable_train_metrics)
 
         run_dir = self._get_output_dir(trial)
         checkpoints_sorted = self._sorted_checkpoints(use_mtime=False, output_dir=run_dir)
