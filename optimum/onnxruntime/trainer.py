@@ -726,7 +726,7 @@ class ORTTrainer(Trainer):
             for step, inputs in enumerate(epoch_iterator):
                 total_batched_samples += 1
 
-                if (step == args.stable_train_warmup_steps):
+                if (self.state.global_step == args.stable_train_warmup_steps):
                     start_train_stable_time = time.time()
 
                 if rng_to_sync:
